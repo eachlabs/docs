@@ -1,0 +1,1534 @@
+openapi: 3.0.3
+info:
+  title: Workflows Engine API
+  description: |
+    # Workflows Engine API
+    
+    Execute and monitor AI workflows with a simple, consistent API.
+    
+    ## Quick Start
+    
+    1. **Trigger a workflow** - POST to `/{workflowID}/trigger` with your inputs
+    2. **Monitor execution** - GET `/executions/{executionID}` to check status
+    3. **Optional**: Provide a `webhook_url` to receive automatic notifications when complete
+    
+    ---
+    
+    ## Webhook Notifications
+    
+    When you provide a `webhook_url` when triggering a workflow, the Workflows Engine will automatically 
+    **POST** to your endpoint with the execution results when the workflow completes (successfully or with an error).
+    
+    ### Key Features
+    
+    - ✅ **Consistent Payload**: The webhook payload has the same structure as the response from `GET /executions/{executionID}`
+    - ✅ **Automatic Retries**: Failed webhook deliveries are automatically retried with exponential backoff
+    - ✅ **Simple Integration**: No authentication required - your endpoint just needs to accept POST requests
+    
+    ### Webhook Request
+    
+    The engine will POST to your `webhook_url` with:
+    
+    - **Method**: `POST`
+    - **Content-Type**: `application/json`
+    - **Body**: Execution details (see payload structure below)
+    
+    ### Example Webhook Payload
+    
+    ```json
+    {
+      "execution_id": "69ae8c7b-7500-4a45-b7c0-348b8cc2665b",
+      "workflow_id": "50741f40-8621-4d46-8a91-dff4d873be98",
+      "status": "completed",
+      "started_at": "2025-12-04T11:48:10Z",
+      "inputs": {
+        "story": "tell an epic story of a rat graduating from law"
+      },
+      "step_outputs": {
+        "step1": {
+          "step_id": "step1",
+          "status": "completed",
+          "output": "Once upon a time in Ratropolis...",
+          "primary": "Once upon a time in Ratropolis...",
+          "metadata": {
+            "model": "openai-chatgpt-5",
+            "version": "0.0.1",
+            "params": {
+              "system_prompt": "You are a helpful assistant",
+              "max_output_tokens": 512
+            }
+          }
+        },
+        "step2": {
+          "step_id": "step2",
+          "status": "completed",
+          "output": [
+            "https://storage.googleapis.com/uploads/image1.png",
+            "https://storage.googleapis.com/uploads/image2.png"
+          ],
+          "primary": "https://storage.googleapis.com/uploads/image1.png",
+          "metadata": {
+            "model": "nano-banana-pro",
+            "params": {
+              "num_images": 2,
+              "aspect_ratio": "16:9"
+            }
+          }
+        }
+      },
+      "output": [
+        "https://storage.googleapis.com/uploads/image1.png",
+        "https://storage.googleapis.com/uploads/image2.png"
+      ]
+    }
+    ```
+    
+    ### Example Webhook Handler
+    
+    ```python
+    @app.post("/webhooks/workflow-completed")
+    async def handle_workflow_webhook(request: Request):
+        execution = await request.json()
+        
+        if execution["status"] == "completed":
+            # Process successful execution
+            final_output = execution["output"]
+            step_details = execution["step_outputs"]
+            print(f"Workflow completed: {final_output}")
+            
+        elif execution["status"] == "failed":
+            # Handle failure
+            error = execution.get("error_cause", "Unknown error")
+            print(f"Workflow failed: {error}")
+        
+        return {"received": True}
+    ```
+    
+    Your webhook endpoint should return a `200 OK` status to acknowledge receipt.
+    
+  version: 1.0.0
+  x-logo:
+    url: './logo-white.svg'
+    altText: 'Eachlabs Logo'
+servers:
+  - url: https://workflows.eachlabs.run/api/v1
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Categories
+    description: Workflow categories for organization
+  - name: Workflows
+    description: Workflow and version management
+  - name: Executions
+    description: Workflow execution and monitoring
+
+paths:
+  /categories:
+    get:
+      tags:
+        - Categories
+      summary: List categories
+      description: |
+        Retrieve all available workflow categories.
+        
+        Categories help organize workflows into logical collections.
+        Use the category slugs when creating or updating workflows.
+      operationId: listCategories
+      responses:
+        '200':
+          description: Categories retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoriesResponse'
+
+  /workflows:
+    post:
+      tags:
+        - Workflows
+      summary: Create workflow
+      description: |
+        Create a new workflow with an initial version and generate its state machine.
+        
+        This endpoint creates both the workflow metadata and its first version in a single operation.
+        The workflow definition must include at least one step.
+      operationId: createWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflowRequest'
+      responses:
+        '201':
+          description: Workflow created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /workflows/{workflowID}:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowID'
+    
+    get:
+      tags:
+        - Workflows
+      summary: Get workflow details
+      description: |
+        Retrieve detailed information about a workflow including all its versions.
+        
+        You can specify either the workflow UUID or slug as the workflowID parameter.
+      operationId: getWorkflow
+      responses:
+        '200':
+          description: Workflow details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    
+    put:
+      tags:
+        - Workflows
+      summary: Update workflow
+      description: |
+        Update workflow metadata such as name, description, categories, and visibility.
+        
+        Note: To update the workflow definition (steps), use the version endpoints instead.
+        Locked workflows cannot be modified unless you're unlocking them.
+      operationId: updateWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkflowRequest'
+      responses:
+        '200':
+          description: Workflow updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflows/{workflowID}/versions/{versionID}:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowID'
+      - name: versionID
+        in: path
+        required: true
+        description: Version identifier (e.g., "v1", "v2")
+        schema:
+          type: string
+          example: v1
+    
+    put:
+      tags:
+        - Workflows
+      summary: Create or update workflow version
+      description: |
+        Create a new workflow version or update an existing one.
+        
+        This operation will:
+        - Create/update the version in the database
+        - Generate or update the AWS Step Functions state machine
+        - Set this version as the latest version for the workflow
+        
+        **Important**: Once a version is locked, it cannot be modified.
+      operationId: upsertWorkflowVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertVersionRequest'
+      responses:
+        '200':
+          description: Workflow version created or updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowVersionSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /{workflowID}/trigger:
+    parameters:
+      - name: workflowID
+        in: path
+        required: true
+        description: Unique workflow identifier
+        schema:
+          type: string
+          example: wf_abc123
+
+    post:
+      tags:
+        - Executions
+      summary: Trigger workflow
+      description: |
+        Start an execution of the workflow.
+        
+        By default, this triggers the latest version of the workflow.
+        You can optionally specify a version_id in the request body to trigger a specific version.
+        
+        The workflow is executed asynchronously - you'll receive an execution ID immediately,
+        then poll `/executions/{executionID}` to check status and retrieve results.
+      operationId: triggerWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerWorkflowRequest'
+      responses:
+        '202':
+          description: Workflow execution started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /{workflowID}/bulk-trigger:
+    parameters:
+      - name: workflowID
+        in: path
+        required: true
+        description: Unique workflow identifier
+        schema:
+          type: string
+          example: wf_abc123
+
+    post:
+      tags:
+        - Executions
+      summary: Bulk trigger workflow
+      description: |
+        Start multiple executions of the same workflow with different inputs in parallel.
+        
+        This endpoint is useful for batch processing scenarios where you need to run the same
+        workflow multiple times with different input parameters.
+        
+        **Key Features:**
+        - Maximum 10 executions per request
+        - All executions share the same `bulk_id` for tracking
+        - Executions run in parallel
+        - Partial failures are allowed - some executions may succeed while others fail
+        - Optional webhook notification when all executions complete
+        
+        **Bulk ID:**
+        All executions from a bulk trigger share a unique `bulk_id` that can be used to:
+        - Query all executions from a single bulk operation
+        - Track batch progress
+        - Correlate webhook notifications
+        
+        **Webhook Behavior:**
+        When a `webhook_url` is provided, the notification payload includes the `bulk_id`
+        field to help you identify and correlate executions from the same bulk operation.
+      operationId: bulkTriggerWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkTriggerWorkflowRequest'
+      responses:
+        '202':
+          description: Bulk workflow executions started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkTriggerWorkflowResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflows/{workflowID}/executions:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowID'
+
+    get:
+      tags:
+        - Executions
+      summary: List workflow executions
+      description: |
+        Retrieve a paginated list of executions for a specific workflow.
+        
+        **Filtering by Bulk ID:**
+        When a `bulk_id` query parameter is provided, the endpoint returns only executions
+        from that specific bulk operation. This allows you to:
+        - Track progress of a batch of executions
+        - Retrieve all executions triggered via the bulk-trigger endpoint
+        - Correlate webhook notifications from the same bulk operation
+        
+        **Usage Example:**
+        ```bash
+        # 1. Trigger a bulk operation
+        POST /workflows/wf-123/bulk-trigger
+        {
+          "inputs": [
+            {"prompt": "sunset"},
+            {"prompt": "mountains"},
+            {"prompt": "ocean"}
+          ]
+        }
+        # Returns: { "bulk_id": "550e8400-e29b-41d4-a716-446655440000", ... }
+        
+        # 2. List all executions from that bulk operation
+        GET /workflows/wf-123/executions?bulk_id=550e8400-e29b-41d4-a716-446655440000
+        ```
+        
+        **Note:** When filtering by `bulk_id`, pagination still applies using the same
+        `offset` and `limit` parameters.
+      operationId: listWorkflowExecutions
+      parameters:
+        - name: bulk_id
+          in: query
+          description: |
+            **Optional**: Filter executions by bulk operation ID.
+            
+            When provided, only returns executions from the specified bulk trigger operation.
+            The `bulk_id` is returned when you trigger a workflow via the bulk-trigger endpoint.
+          schema:
+            type: string
+            format: uuid
+            example: "550e8400-e29b-41d4-a716-446655440000"
+        - name: offset
+          in: query
+          description: |
+            Pagination offset - number of items to skip.
+            
+            The response includes a `offset` field pointing to the next page if more results exist.
+          schema:
+            type: integer
+            format: int32
+            default: 0
+            minimum: 0
+            example: 0
+        - name: limit
+          in: query
+          description: |
+            Maximum number of executions to return per page.
+            
+            Default: 50
+            Maximum: 100
+          schema:
+            type: integer
+            format: int32
+            default: 50
+            minimum: 1
+            maximum: 100
+            example: 50
+      responses:
+        '200':
+          description: List of workflow executions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListExecutionsResponse'
+              examples:
+                normal:
+                  summary: Normal workflow execution list
+                  value:
+                    executions:
+                      - execution_id: "exec-1"
+                        flow_id: "wf-123"
+                        flow_name: "Text to Image Generator"
+                        version_id: "v1"
+                        status: "completed"
+                        started_at: "2025-12-20T10:00:00Z"
+                        ended_at: "2025-12-20T10:05:00Z"
+                        created_at: "2025-12-20T10:00:00Z"
+                        updated_at: "2025-12-20T10:05:00Z"
+                      - execution_id: "exec-2"
+                        flow_id: "wf-123"
+                        flow_name: "Text to Image Generator"
+                        version_id: "v1"
+                        status: "running"
+                        started_at: "2025-12-20T10:10:00Z"
+                        created_at: "2025-12-20T10:10:00Z"
+                        updated_at: "2025-12-20T10:10:00Z"
+                    offset: 2
+                    total_count: 142
+                bulk_filtered:
+                  summary: Executions filtered by bulk_id
+                  value:
+                    executions:
+                      - execution_id: "exec-1"
+                        flow_id: "wf-123"
+                        flow_name: "Batch Image Generator"
+                        version_id: "v1"
+                        status: "completed"
+                        started_at: "2025-12-20T10:00:00Z"
+                        ended_at: "2025-12-20T10:05:00Z"
+                        created_at: "2025-12-20T10:00:00Z"
+                        updated_at: "2025-12-20T10:05:00Z"
+                      - execution_id: "exec-2"
+                        flow_id: "wf-123"
+                        flow_name: "Batch Image Generator"
+                        version_id: "v1"
+                        status: "completed"
+                        started_at: "2025-12-20T10:00:01Z"
+                        ended_at: "2025-12-20T10:05:15Z"
+                        created_at: "2025-12-20T10:00:01Z"
+                        updated_at: "2025-12-20T10:05:15Z"
+                      - execution_id: "exec-3"
+                        flow_id: "wf-123"
+                        flow_name: "Batch Image Generator"
+                        version_id: "v1"
+                        status: "completed"
+                        started_at: "2025-12-20T10:00:02Z"
+                        ended_at: "2025-12-20T10:04:58Z"
+                        created_at: "2025-12-20T10:00:02Z"
+                        updated_at: "2025-12-20T10:04:58Z"
+                    total_count: 3
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /executions/{executionID}:
+    parameters:
+      - $ref: '#/components/parameters/ExecutionID'
+
+    get:
+      tags:
+        - Executions
+      summary: Get execution details
+      description: Get the current status and output of a workflow execution
+      operationId: getExecution
+      parameters:
+        - name: timeout
+          in: query
+          description: Maximum time to wait for execution completion (in seconds)
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 30
+      responses:
+        '200':
+          description: Execution details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  parameters:
+    WorkflowID:
+      name: workflowID
+      in: path
+      required: true
+      description: Unique workflow identifier
+      schema:
+        type: string
+        example: wf_abc123
+
+    ExecutionID:
+      name: executionID
+      in: path
+      required: true
+      description: Execution identifier
+      schema:
+        type: string
+        example: exec_xyz789
+
+  schemas:
+    CategoriesResponse:
+      type: object
+      required:
+        - categories
+      properties:
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/Category'
+          description: List of available workflow categories
+      example:
+        categories:
+          - slug: "image-generation"
+            label: "Image Generation"
+            description: "Workflows for generating images"
+            is_default: true
+            created_at: "2025-12-01T10:00:00Z"
+            updated_at: "2025-12-01T10:00:00Z"
+          - slug: "text-processing"
+            label: "Text Processing"
+            description: "Workflows for processing text"
+            is_default: true
+            created_at: "2025-12-01T10:00:00Z"
+            updated_at: "2025-12-01T10:00:00Z"
+
+    Category:
+      type: object
+      required:
+        - slug
+        - label
+      properties:
+        slug:
+          type: string
+          description: Unique category identifier (used in API requests)
+          example: "image-generation"
+        label:
+          type: string
+          description: Human-readable category name
+          example: "Image Generation"
+        description:
+          type: string
+          description: Category description
+          example: "Workflows for generating images"
+        is_default:
+          type: boolean
+          description: Whether this is a default system category
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when category was created
+          example: "2025-12-01T10:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when category was last updated
+          example: "2025-12-01T10:00:00Z"
+
+    CreateWorkflowRequest:
+      type: object
+      required:
+        - name
+        - description
+        - definition
+      properties:
+        name:
+          type: string
+          description: Human-readable workflow name
+          example: "Text to Image Generator"
+        description:
+          type: string
+          description: Detailed description of what the workflow does
+          example: "Generates images from text prompts using AI models"
+        categories:
+          type: array
+          items:
+            type: string
+          description: List of category slugs to organize the workflow
+          example: ["image-generation", "ai"]
+        locked:
+          type: boolean
+          description: Whether the workflow is locked from modifications
+          default: false
+        production:
+          type: boolean
+          description: Whether this is a production workflow
+          default: false
+        definition:
+          type: object
+          description: |
+            The workflow definition containing steps, input schema, and metadata.
+            This follows the workflow DSL format.
+          properties:
+            version:
+              type: string
+              description: Version identifier for this workflow
+              example: "v1"
+            steps:
+              type: array
+              description: Array of step definitions
+              items:
+                type: object
+              example:
+                - step_id: "step1"
+                  type: "model"
+                  model: "openai-chatgpt-5"
+                  params:
+                    system_prompt: "You are a helpful assistant"
+                    user_prompt: "{{inputs.prompt}}"
+            input_schema:
+              type: object
+              description: JSON Schema for validating workflow inputs
+              example:
+                type: "object"
+                properties:
+                  prompt:
+                    type: "string"
+                    description: "Text prompt for generation"
+                required: ["prompt"]
+            metadata:
+              type: object
+              description: Additional workflow metadata
+              example:
+                output_mapping:
+                  result: "{{step1.output}}"
+
+    UpdateWorkflowRequest:
+      type: object
+      description: |
+        Update workflow metadata. All fields are optional - only provided fields will be updated.
+        
+        Note: To update the workflow definition (steps), use the version endpoints instead.
+      properties:
+        name:
+          type: string
+          description: Human-readable workflow name
+          example: "Text to Image Generator v2"
+        description:
+          type: string
+          description: Detailed description of what the workflow does
+          example: "Enhanced image generation with multiple models"
+        categories:
+          type: array
+          items:
+            type: string
+          description: List of category slugs
+          example: ["image-generation", "ai", "production"]
+        locked:
+          type: boolean
+          description: Lock/unlock the workflow from modifications
+        production:
+          type: boolean
+          description: Mark as production workflow
+
+    UpsertVersionRequest:
+      type: object
+      required:
+        - version_id
+        - definition
+      properties:
+        version_id:
+          type: string
+          description: Version identifier (e.g., "v1", "v2", "v1.1")
+          example: "v2"
+        definition:
+          type: object
+          description: |
+            The complete workflow definition for this version.
+            This follows the workflow DSL format and must include all steps.
+          properties:
+            version:
+              type: string
+              description: Version identifier (should match version_id)
+              example: "v2"
+            steps:
+              type: array
+              description: Array of step definitions
+              items:
+                type: object
+              example:
+                - step_id: "generate_text"
+                  type: "model"
+                  model: "openai-chatgpt-5"
+                  params:
+                    system_prompt: "You are a helpful assistant"
+                    user_prompt: "{{inputs.prompt}}"
+                - step_id: "generate_image"
+                  type: "model"
+                  model: "flux-dev"
+                  params:
+                    prompt: "{{generate_text.output}}"
+            input_schema:
+              type: object
+              description: JSON Schema for validating workflow inputs
+            metadata:
+              type: object
+              description: Additional workflow metadata including output mappings
+        locked:
+          type: boolean
+          description: Whether to lock this version from further modifications
+          default: false
+        production:
+          type: boolean
+          description: Whether this is a production version
+          default: false
+
+    WorkflowDetail:
+      type: object
+      description: Complete workflow information including all versions
+      required:
+        - workflow_id
+        - name
+        - description
+      properties:
+        workflow_id:
+          type: string
+          format: uuid
+          description: Unique workflow identifier
+          example: "50741f40-8621-4d46-8a91-dff4d873be98"
+        slug:
+          type: string
+          description: URL-friendly workflow identifier
+          example: "text-to-image-generator"
+        name:
+          type: string
+          description: Human-readable workflow name
+          example: "Text to Image Generator"
+        description:
+          type: string
+          description: Workflow description
+          example: "Generates images from text prompts"
+        categories:
+          type: array
+          items:
+            type: string
+          description: Category slugs
+          example: ["image-generation", "ai"]
+        locked:
+          type: boolean
+          description: Whether workflow is locked
+          example: false
+        production:
+          type: boolean
+          description: Whether this is a production workflow
+          example: false
+        latest_version_id:
+          type: string
+          description: Most recently updated version ID
+          example: "v2"
+        status:
+          type: string
+          enum: [active, archived, deleted]
+          description: Workflow lifecycle status
+          example: active
+        trigger_count:
+          type: integer
+          description: Total number of times this workflow has been triggered
+          example: 42
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when workflow was created
+          example: "2025-12-01T10:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when workflow was last updated
+          example: "2025-12-07T15:30:00Z"
+        versions:
+          type: array
+          description: List of all versions for this workflow
+          items:
+            $ref: '#/components/schemas/WorkflowVersionSummary'
+
+    WorkflowVersionSummary:
+      type: object
+      description: Summary information about a workflow version
+      required:
+        - version_id
+        - slug
+      properties:
+        version_id:
+          type: string
+          description: Version identifier
+          example: "v1"
+        slug:
+          type: string
+          description: Workflow slug (inherited from parent workflow)
+          example: "text-to-image-generator"
+        locked:
+          type: boolean
+          description: Whether this version is locked from modifications
+          example: false
+        production:
+          type: boolean
+          description: Whether this is a production version
+          example: true
+        trigger_count:
+          type: integer
+          description: Number of times this specific version has been triggered
+          example: 15
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when version was created
+          example: "2025-12-01T10:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when version was last updated
+          example: "2025-12-05T14:20:00Z"
+        status:
+          type: string
+          enum: [active, archived, deleted]
+          description: Version lifecycle status
+          example: active
+        definition:
+          type: object
+          description: |
+            The complete workflow definition (only included in detail responses).
+            Contains steps, input schema, and metadata.
+
+    TriggerWorkflowRequest:
+      type: object
+      properties:
+        version_id:
+          type: string
+          description: |
+            **Optional**: Specific version to trigger.
+            
+            If not provided, triggers the latest version of the workflow.
+            This allows you to execute specific versions for testing or comparison.
+          example: "v1"
+        inputs:
+          type: object
+          description: Input parameters defined in the workflow definition for the workflow
+          example:
+            text: "tell me a story"
+        webhook_url:
+          type: string
+          format: uri
+          description: |
+            **Optional webhook URL for execution completion notifications.**
+            
+            When provided, the engine will POST an `ExecutionDetails` payload to this URL
+            when the workflow finishes (either successfully or with an error).
+            
+            See the **Webhooks** section for detailed information about webhook behavior and payload structure.
+            
+          example: https://your-api.com/webhooks/workflow-completed
+
+    BulkTriggerWorkflowRequest:
+      type: object
+      required:
+        - inputs
+      properties:
+        version_id:
+          type: string
+          description: |
+            **Optional**: Specific version to trigger for all executions.
+            
+            If not provided, triggers the latest version of the workflow.
+          example: "v1"
+        inputs:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: |
+            Array of input parameter objects. Each item in the array will result in a separate workflow execution.
+            
+            **Constraints:**
+            - Minimum 1 input required
+            - Maximum 10 inputs per request
+            
+            All inputs must conform to the workflow's input schema.
+          items:
+            type: object
+            additionalProperties: true
+          example:
+            - prompt: "Generate image of a sunset"
+              style: "photorealistic"
+            - prompt: "Generate image of mountains"
+              style: "artistic"
+            - prompt: "Generate image of ocean"
+              style: "minimalist"
+        webhook_url:
+          type: string
+          format: uri
+          description: |
+            **Optional webhook URL for execution completion notifications.**
+            
+            When provided, webhook notifications for all executions in this bulk operation
+            will include a `bulk_id` field to help you correlate them.
+            
+            Each execution sends its own webhook notification when it completes.
+          example: https://your-api.com/webhooks/workflow-completed
+
+    BulkTriggerWorkflowResponse:
+      type: object
+      required:
+        - bulk_id
+        - executions
+      properties:
+        bulk_id:
+          type: string
+          format: uuid
+          description: |
+            Unique identifier for this bulk operation. All executions from this bulk trigger
+            share this ID, which can be used to query and track them together.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        executions:
+          type: array
+          description: |
+            Array of execution responses, one per input in the request.
+            The order matches the order of inputs in the request.
+            
+            **Partial Failures:**
+            If some inputs fail validation, those entries will have `status: "failed"`
+            with an error message, while successful triggers will have `status: "queued"`.
+          items:
+            $ref: '#/components/schemas/ExecutionResponse'
+          example:
+            - execution_id: "exec-1"
+              status: "queued"
+              started_at: "2025-12-20T10:00:00Z"
+            - execution_id: "exec-2"
+              status: "queued"
+              started_at: "2025-12-20T10:00:01Z"
+            - status: "failed"
+              message: "invalid input: missing required field 'prompt'"
+
+    ExecutionResponse:
+      type: object
+      description: Response from triggering a workflow execution
+      properties:
+        execution_id:
+          type: string
+          description: Unique execution identifier (only present for successful triggers)
+          example: exec_xyz789
+        status:
+          type: string
+          enum: [queued, failed]
+          description: |
+            Execution status immediately after triggering.
+            - `queued`: Workflow execution has been queued and will start shortly
+            - `failed`: Trigger failed due to validation or system error
+          example: queued
+        started_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution was queued (only present for successful triggers)
+        message:
+          type: string
+          description: Error message (only present when status is "failed")
+          example: "invalid input: missing required field"
+      example:
+        execution_id: "e2dba2bb-bc1d-4651-b6bf-fbbbebdee104"
+        status: "queued"
+        started_at: "2025-12-03T10:21:09Z"
+
+    ListExecutionsResponse:
+      type: object
+      description: Paginated list of workflow executions
+      required:
+        - executions
+        - total_count
+      properties:
+        executions:
+          type: array
+          description: Array of execution summaries
+          items:
+            $ref: '#/components/schemas/ExecutionSummary'
+        offset:
+          type: integer
+          format: int32
+          description: |
+            Offset for the next page of results.
+            
+            If null, there are no more results to fetch.
+          example: 50
+        total_count:
+          type: integer
+          format: int32
+          description: Total number of executions matching the query
+          example: 142
+      example:
+        executions:
+          - execution_id: "exec-1"
+            flow_id: "wf-123"
+            flow_name: "Text to Image Generator"
+            version_id: "v1"
+            status: "completed"
+            started_at: "2025-12-20T10:00:00Z"
+            ended_at: "2025-12-20T10:05:00Z"
+            created_at: "2025-12-20T10:00:00Z"
+            updated_at: "2025-12-20T10:05:00Z"
+          - execution_id: "exec-2"
+            flow_id: "wf-123"
+            flow_name: "Text to Image Generator"
+            version_id: "v1"
+            status: "running"
+            started_at: "2025-12-20T10:10:00Z"
+            created_at: "2025-12-20T10:10:00Z"
+            updated_at: "2025-12-20T10:10:00Z"
+        offset: 2
+        total_count: 142
+
+    ExecutionSummary:
+      type: object
+      description: |
+        Summary information about a workflow execution, used in list responses.
+        
+        Contains less detail than `ExecutionDetails` to optimize list queries.
+      required:
+        - execution_id
+        - flow_id
+        - flow_name
+        - version_id
+        - status
+        - created_at
+      properties:
+        execution_id:
+          type: string
+          description: Unique execution identifier
+          example: "exec-1"
+        flow_id:
+          type: string
+          description: Workflow identifier (UUID)
+          example: "wf-123"
+        flow_name:
+          type: string
+          description: Human-readable workflow name
+          example: "Text to Image Generator"
+        version_id:
+          type: string
+          description: Version identifier for this execution
+          example: "v1"
+        api_key:
+          type: string
+          description: User/API key identifier that triggered this execution
+          example: "user-456"
+        status:
+          type: string
+          enum: [running, completed, failed, cancelled]
+          description: Current execution status
+          example: "completed"
+        started_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution started (omitted if not started yet)
+          example: "2025-12-20T10:00:00Z"
+        ended_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution completed (omitted for running executions)
+          example: "2025-12-20T10:05:00Z"
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution was created
+          example: "2025-12-20T10:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution was last updated
+          example: "2025-12-20T10:05:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution was soft-deleted (if applicable)
+          example: null
+        dry_run:
+          type: boolean
+          description: Whether this was a dry-run execution (no actual model calls)
+          default: false
+          example: false
+        inputs:
+          type: object
+          description: Input parameters provided when triggering the workflow
+          additionalProperties: true
+          example:
+            prompt: "Generate an image of a sunset"
+        step_results:
+          description: |
+            Brief summary of step execution results.
+            
+            Structure varies - may be an object with step IDs as keys, or an array.
+          oneOf:
+            - type: object
+            - type: array
+              items: {}
+        output:
+          type: string
+          description: |
+            Simple string output from the workflow (if available).
+            
+            For complex outputs, use `output_json` instead.
+          example: "https://storage.googleapis.com/uploads/image.png"
+        output_json:
+          type: object
+          description: |
+            Structured JSON output from the workflow (if available).
+            
+            Contains the full workflow output when output mapping is configured.
+          additionalProperties: true
+          example:
+            image_url: "https://storage.googleapis.com/uploads/image.png"
+            generation_time: 2.45
+        cost:
+          description: |
+            Cost information for this execution (if available).
+            
+            Structure varies by provider and workflow configuration.
+          oneOf:
+            - type: object
+            - type: number
+
+    ExecutionDetails:
+      type: object
+      description: |
+        Execution details returned by both `GET /executions/{id}` and webhook notifications.
+        
+        ### Webhook Notifications
+        When you provide a `webhook_url` when triggering a workflow, this same structure
+        will be POSTed to your webhook URL when the execution completes.
+        
+      required:
+        - execution_id
+        - workflow_id
+        - status
+      properties:
+        execution_id:
+          type: string
+          description: Unique execution identifier (UUID format)
+          example: "69ae8c7b-7500-4a45-b7c0-348b8cc2665b"
+        workflow_id:
+          type: string
+          description: Workflow identifier (UUID format)
+          example: "50741f40-8621-4d46-8a91-dff4d873be98"
+        bulk_id:
+          type: string
+          format: uuid
+          description: |
+            Bulk operation identifier (only present for executions triggered via bulk-trigger endpoint).
+            
+            All executions from the same bulk operation share this ID, allowing you to:
+            - Query all executions from a bulk operation together
+            - Track batch progress
+            - Correlate webhook notifications from related executions
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        status:
+          type: string
+          enum: [running, completed, failed, cancelled]
+          description: |
+            Current execution status:
+            - `running` - Workflow is currently executing
+            - `completed` - Workflow finished successfully  
+            - `failed` - Workflow encountered an error
+            - `cancelled` - Workflow was cancelled by user
+          example: completed
+        started_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution started
+          example: "2025-12-04T11:48:10Z"
+        completed_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the execution completed (omitted for running executions)
+          example: "2025-12-04T11:50:53Z"
+        inputs:
+          type: object
+          description: Input parameters provided when triggering the workflow
+          additionalProperties: true
+          example:
+            story: "tell an epic story of a rat graduating from law"
+        step_outputs:
+          type: object
+          description: |
+            Complete outputs from all workflow steps. Each key is a step ID (e.g., "step1", "step2"),
+            and the value is a `StepOutput` object containing detailed information about that step's execution.
+          additionalProperties:
+            $ref: '#/components/schemas/StepOutput'
+          example:
+            step1:
+              step_id: "step1"
+              status: "completed"
+              started_at: "2025-12-04T11:48:10Z"
+              completed_at: "2025-12-04T11:48:39Z"
+              output: "Once upon a time..."
+              primary: "Once upon a time..."
+              metadata:
+                model: "openai-chatgpt-5"
+                version: "0.0.1"
+                params:
+                  system_prompt: "You are a helpful assistant"
+                  user_prompt: "tell an epic story of a rat graduating from law"
+                  max_output_tokens: 512
+            step2:
+              step_id: "step2"
+              status: "completed"
+              started_at: "2025-12-04T11:48:39Z"
+              completed_at: "2025-12-04T11:50:53Z"
+              output:
+                - "https://storage.googleapis.com/uploads/image1.png"
+                - "https://storage.googleapis.com/uploads/image2.png"
+              primary: "https://storage.googleapis.com/uploads/image1.png"
+              metadata:
+                model: "nano-banana-pro"
+                version: "0.0.1"
+                params:
+                  prompt: "Generate images based on the story"
+                  num_images: 2
+                  aspect_ratio: "16:9"
+                  resolution: "1K"
+                  output_format: "png"
+        output:
+          description: |
+            Output from the last completed step in the workflow.
+            This provides quick access to the final result without navigating step_outputs.
+            
+            **Important**: This field is only populated when the workflow status is `completed`.
+            - For `running` workflows: null (even if some steps have completed)
+            - For `failed` workflows: null
+            - For `cancelled` workflows: null
+            - For `completed` workflows: contains output from the chronologically last step
+            
+            The last step is determined by the latest `completed_at` timestamp.
+            The value is extracted from the step's `output` field, or `primary` field as fallback.
+            
+            The type varies based on the workflow's final step:
+            - Text generation steps return a string
+            - Image generation steps return an array of URLs
+            - Structured data steps return an object
+          oneOf:
+            - type: string
+            - type: array
+              items: {}
+            - type: object
+            - type: 'null'
+          example:
+            - "https://storage.googleapis.com/uploads/image1.png"
+            - "https://storage.googleapis.com/uploads/image2.png"
+        error:
+          type: string
+          description: High-level error message (only present if status is "failed")
+          example: "ExecutionFailed"
+        error_cause:
+          type: string
+          description: Detailed error cause with context (only present if status is "failed")
+          example: "Step 'generate_image' failed: Model timeout after 30s"
+
+    StepOutput:
+      type: object
+      description: |
+        Detailed information about a single step's execution within a workflow.
+        Each step in the workflow produces one of these objects.
+      required:
+        - step_id
+        - status
+      properties:
+        step_id:
+          type: string
+          description: Unique identifier for this step within the workflow
+          example: "step1"
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+          description: |
+            Current status of this step:
+            - `queued` - Step is waiting to execute
+            - `running` - Step is currently executing
+            - `completed` - Step finished successfully
+            - `failed` - Step encountered an error
+            - `cancelled` - Step was skipped due to an earlier failure in the workflow
+          example: "completed"
+        started_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the step started executing (omitted for queued steps)
+          example: "2025-12-04T11:48:10Z"
+        completed_at:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the step finished (only present if completed or failed)
+          example: "2025-12-04T11:48:39Z"
+        output:
+          description: |
+            The step's output data. The structure depends on the step type:
+            - Text generation: string
+            - Image generation: array of URLs
+            - Structured data: object
+            - Multi-output steps: array or object with multiple values
+          oneOf:
+            - type: string
+            - type: array
+              items: {}
+            - type: object
+            - type: number
+            - type: boolean
+          example: "Once upon a time in the city of Ratropolis..."
+        primary:
+          description: |
+            The primary output value from this step. For steps that return multiple values
+            (e.g., generating multiple images), this field contains the first/main result
+            for quick access.
+          oneOf:
+            - type: string
+            - type: number
+            - type: boolean
+            - type: object
+          example: "https://storage.googleapis.com/uploads/image1.png"
+        input:
+          type: object
+          description: |
+            The complete resolved input payload sent to this step handler.
+            
+            This includes the full step configuration with all template values resolved:
+            - `step_id` - The step identifier
+            - `type` or `model` - The step type or model name
+            - `version` - API version (if applicable)
+            - `params` or `inputs` - All parameters with values from previous steps resolved
+            
+            Values like `{{step1.output}}` are replaced with actual data from prior steps.
+          additionalProperties: true
+          example:
+            step_id: "generate_image"
+            model: "flux-dev"
+            version: "1.0.0"
+            params:
+              prompt: "Generate an image of a rat graduating from law school"
+              num_images: 2
+        metadata:
+          type: object
+          description: |
+            Step configuration and runtime information. Fields vary by step type:
+            
+            **Model steps** include:
+            - `model` - The AI model identifier (e.g., "openai-chatgpt-5")
+            - `version` - API version for the step handler (e.g., "0.0.1")
+            - `params` - All parameters sent to the model
+            - `prediction_id` - External prediction ID (when completed)
+            - `processed_at` - Processing timestamp (when completed)
+            
+            **HTTP steps** include:
+            - `type` - Always "http"
+            - `method` - HTTP method (e.g., "GET", "POST")
+            - `url` - Request URL
+            - `params` - Request parameters
+            - `elapsed_seconds` - Request duration (when completed)
+            
+            **Python steps** include:
+            - `type` - Always "python"
+            - `params` - Input parameters
+            - `execution_time` - Execution duration in seconds (when completed)
+            - `processed_at` - Processing timestamp (when completed)
+          properties:
+            model:
+              type: string
+              description: The AI model used (model steps only)
+              example: "openai-chatgpt-5"
+            version:
+              type: string
+              description: API version (model steps only)
+              example: "0.0.1"
+            type:
+              type: string
+              description: Step type (http or python steps)
+              enum: [http, python]
+              example: "http"
+            method:
+              type: string
+              description: HTTP method (http steps only)
+              example: "POST"
+            url:
+              type: string
+              description: Request URL (http steps only)
+              example: "https://api.example.com/endpoint"
+            params:
+              type: object
+              description: Complete parameters sent to the step, including resolved values
+              additionalProperties: true
+              example:
+                system_prompt: "You are a helpful assistant"
+                user_prompt: "tell an epic story of a rat graduating from law"
+                max_output_tokens: 512
+            prediction_id:
+              type: string
+              description: External prediction ID (model steps, when completed)
+              example: "6yxkzw4th9rme0ct1re8q42xer"
+            processed_at:
+              type: string
+              format: date-time
+              description: Processing timestamp (when available)
+              example: "2025-12-04T11:48:39Z"
+            elapsed_seconds:
+              type: number
+              description: Execution duration in seconds (when completed)
+              example: 2.45
+            execution_time:
+              type: number
+              description: Python execution time in seconds (python steps, when completed)
+              example: 0.123
+        error:
+          type: string
+          description: Error message if the step failed
+          example: "ModelTimeout"
+        error_cause:
+          type: string
+          description: Detailed error information if the step failed
+          example: "Model request timed out after 30 seconds"
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message
+
+  responses:
+    BadRequest:
+      description: Bad request - Invalid input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Unauthorized - Invalid or missing API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Forbidden:
+      description: Forbidden - Operation not allowed (e.g., workflow is locked)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Not found - Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
